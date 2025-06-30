@@ -1,121 +1,138 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-import joblib
-import os
+import streamlit as st # type: ignore
+import pandas as pd # type: ignore
+import numpy as np # type: ignore
+import tensorflow as tf # type: ignore
+from tensorflow.keras.models import load_model # type: ignore
+import joblib # type: ignore
 
 # --- Konfigurasi Halaman Streamlit ---
 st.set_page_config(
     page_title="Prediksi Emisi CO₂ Perubahan Lahan",
     page_icon="🌍",
-    layout="centered" # Atau "wide"
+    layout="centered"
 )
 
 # --- Path Model dan Scaler ---
-# PASTIKAN nama file ini sesuai dengan yang Anda simpan dari Colab
-# PASTIKAN file-file ini ada di direktori yang sama dengan app.py
-MODEL_PATH = 'gru_co2_model.h5' # Sesuaikan nama file model Anda
-SCALER_PATH = 'co2_scaler.pkl' # Sesuaikan nama file scaler Anda
-SEQUENCE_LENGTH = 10 # Sesuaikan dengan panjang sekuens (timesteps) yang digunakan saat pelatihan
-# Jika model Anda dilatih dengan banyak fitur, sesuaikan daftar ini.
-# Untuk contoh ini, kita asumsikan model memprediksi satu fitur (CO2 Emissions)
-FEATURE_NAMES = ['Emisi CO2'] # Sesuaikan dengan nama fitur input Anda (misal: ['Deforestation', 'Agricultural Area', 'CO2 Emission'])
+MODEL_PATH = './gru_co2_model.h5'
+SCALER_PATH = './co2_scaler.pkl'
+SEQUENCE_LENGTH = 10
+FEATURE_NAMES = ['CO2']  # GANTI agar sama dengan saat scaler.fit()
 
-# --- Fungsi untuk Memuat Model dan Scaler (dengan cache agar efisien) ---
-@st.cache_resource # Gunakan st.cache_resource untuk objek besar seperti model ML
+# --- Fungsi untuk Memuat Model dan Scaler ---
+@st.cache_resource
 def load_ml_assets(model_path, scaler_path):
-    try:
-        model = load_model(model_path)
-        scaler = joblib.load(scaler_path)
-        return model, scaler
-    except FileNotFoundError:
-        st.error(f"Error: File model atau scaler tidak ditemukan.")
-        st.error(f"Pastikan '{os.path.basename(model_path)}' dan '{os.path.basename(scaler_path)}' ada di direktori yang sama dengan 'app.py'.")
-        st.stop() # Hentikan eksekusi jika file tidak ditemukan
-    except Exception as e:
-        st.error(f"Terjadi kesalahan saat memuat model atau scaler: {e}")
-        st.stop()
+    model = load_model(model_path, compile=False)
+    scaler = joblib.load(scaler_path)
+    return model, scaler
 
 model, scaler = load_ml_assets(MODEL_PATH, SCALER_PATH)
 
 # --- Judul dan Deskripsi Aplikasi ---
 st.title("🌍 Prediksi Emisi CO₂ dari Perubahan Penggunaan Lahan")
 st.markdown("Aplikasi ini menggunakan model **GRU (Gated Recurrent Unit)** untuk memprediksi emisi CO₂ berdasarkan data historis perubahan penggunaan lahan.")
-st.markdown("Masukkan urutan data historis emisi CO₂ atau fitur terkait untuk mendapatkan prediksi emisi berikutnya.")
+
 
 st.subheader("Bagaimana cara menggunakan?")
 st.info(
-    f"Masukkan {SEQUENCE_LENGTH} nilai historis emisi CO₂ (atau fitur relevan) Anda, dipisahkan dengan koma. "
-    "Contoh: `100.5, 102.1, 101.8, 103.5, 105.0, 104.2, 106.7, 108.3, 107.9, 109.1`."
-    "\n\nUnit dan skala input harus sesuai dengan data yang digunakan saat pelatihan model."
+    f"Aplikasi menggunakan data historis emisi CO₂ per benua. "
+    f"Pilih benua untuk mendapatkan hasil emisi CO₂ yang diperkirakan selama 5 tahun ke depan."
 )
+# Load CSV
+df_landuse = pd.read_csv("co2-land-use.csv")
+df_region = pd.read_csv("country_regions.csv")
 
-# --- Input Pengguna ---
-st.header("Input Data Historis")
+# Gabungkan berdasarkan kolom 'Code'
+df_merged = df_landuse.merge(df_region, on="Code")
 
-# Jika model Anda memiliki banyak fitur, Anda bisa membuat input terpisah untuk setiap fitur
-# atau meminta pengguna mengunggah CSV. Untuk kesederhanaan, kita asumsikan 1 fitur input.
-user_input_str = st.text_area(f"Masukkan {SEQUENCE_LENGTH} nilai historis {FEATURE_NAMES[0]} (dipisahkan koma):",
-                               "2.5, 2.7, 2.6, 2.8, 2.9, 3.1, 3.0, 3.2, 3.3, 3.5") # Ganti contoh dengan data CO2 yang relevan
+# Ambil data 10 tahun terakhir untuk masing-masing region
+sequence_length = 10
+region_list = df_merged['Region'].unique()
 
-# --- Tombol Prediksi ---
-if st.button("Prediksi Emisi CO₂ Berikutnya"):
+data_historis_co2 = {}
+
+for region in region_list:
+    # Ambil semua data dari region ini
+    df_region_data = df_merged[df_merged['Region'] == region]
+
+    # Hitung total emisi CO2 per tahun per region
+    df_grouped = df_region_data.groupby('Year')['Annual CO₂ emissions from land-use change'].sum().reset_index()
+
+    # Ambil N tahun terakhir
+    last_n_years = df_grouped.sort_values('Year').tail(sequence_length)
+
+    # Simpan ke dictionary
+    data_historis_co2[region] = last_n_years['Annual CO₂ emissions from land-use change'].tolist()
+# --- Data Historis Dummy per Benua ---
+DATA_HISTORIS_CO2 = data_historis_co2
+
+# --- Input User ---
+st.header("Input Prediksi untuk 5 Tahun ke Depan")
+benua = st.selectbox("Pilih Benua:", options=list(DATA_HISTORIS_CO2.keys()))
+
+if st.button("Lakukan Prediksi"):
     try:
-        # Proses input pengguna
-        input_values_list = [float(x.strip()) for x in user_input_str.split(',') if x.strip()]
+        data_input = DATA_HISTORIS_CO2[benua]
 
-        if len(input_values_list) != SEQUENCE_LENGTH:
-            st.warning(f"Jumlah nilai yang dimasukkan tidak sesuai. Harap masukkan tepat {SEQUENCE_LENGTH} nilai. Anda memasukkan {len(input_values_list)} nilai.")
-        else:
-            # Ubah ke array NumPy dan reshape untuk scaler
-            # Scaler biasanya mengharapkan input 2D (jumlah_sampel, jumlah_fitur)
-            # Jika hanya 1 fitur, maka shape-nya (SEQUENCE_LENGTH, 1)
-            input_array = np.array(input_values_list).reshape(-1, 1) # Jika 1 fitur
+        # Ambil data 10 terakhir, ubah ke DataFrame sesuai fitur
+        input_df = pd.DataFrame(data_input[-SEQUENCE_LENGTH:], columns=FEATURE_NAMES)
 
-            # Jika Anda memiliki banyak fitur, Anda perlu memastikan shape-nya (SEQUENCE_LENGTH, NUM_FEATURES)
-            # Contoh: input_array = np.array(input_values_list).reshape(SEQUENCE_LENGTH, len(FEATURE_NAMES))
+        # Normalisasi
+        scaled_input = scaler.transform(input_df)
 
-            # Normalisasi input menggunakan scaler yang sudah dilatih
-            scaled_input = scaler.transform(input_array)
+        # GRU input shape: (batch, time, features)
+        input_model = scaled_input.reshape(1, SEQUENCE_LENGTH, 1)
 
-            # Reshape untuk model GRU: (batch_size, sequence_length, num_features)
-            # Untuk prediksi satu sampel, batch_size = 1
-            scaled_input_for_model = scaled_input.reshape(1, SEQUENCE_LENGTH, len(FEATURE_NAMES))
+        # Prediksi sekaligus 5 tahun
+        prediction_scaled = model.predict(input_model)  # shape: (1, 5)
 
-            # Prediksi menggunakan model GRU
-            with st.spinner('Melakukan prediksi...'):
-                prediction_scaled = model.predict(scaled_input_for_model)
+        # Buat DataFrame dengan 5 kolom agar cocok dengan scaler
+        # Gunakan nama fitur yang cocok (misalnya CO2_t+1, CO2_t+2, dst)
+        pred_feature_names = [f'CO2_t+{i+1}' for i in range(prediction_scaled.shape[1])]
+        pred_df = pd.DataFrame(prediction_scaled, columns=pred_feature_names)
 
-            # Invers normalisasi untuk mendapatkan nilai emisi CO2 asli
-            # prediction_scaled akan berbentuk (1, num_features_output_dari_model)
-            # Pastikan scaler bisa melakukan inverse_transform pada shape ini
-            predicted_original_value = scaler.inverse_transform(prediction_scaled)[0][0]
+        # Invers normalisasi tiap kolom
+        pred_df_inverse = pd.DataFrame()
+        for i in range(pred_df.shape[1]):
+            col_df = pd.DataFrame(pred_df.iloc[:, [i]].values, columns=FEATURE_NAMES)
+            inversed = scaler.inverse_transform(col_df)[0][0]
+            pred_df_inverse[f'Tahun 20{i+24}'] = [inversed]
 
-            st.success(f"**Prediksi Emisi CO₂ untuk periode berikutnya adalah: `{predicted_original_value:.3f}`**")
+        # Transpose untuk tampilan
+        pred_df_inverse = pred_df_inverse.T
+        pred_df_inverse.columns = ['Emisi CO2 (juta ton)']
 
-            st.markdown("---")
-            st.subheader("Visualisasi Input dan Output")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("Urutan Input (Nilai Asli):")
-                st.line_chart(pd.DataFrame(input_values_list, columns=[FEATURE_NAMES[0]]))
-            with col2:
-                st.write("Urutan Input (Nilai Ternormalisasi):")
-                st.line_chart(pd.DataFrame(scaled_input.flatten(), columns=['Scaled Value']))
+        # Tampilkan hasil
+        st.success(f"Prediksi emisi CO₂ selama {prediction_scaled.shape[1]} tahun ke depan di {benua}:")
+        st.dataframe(pred_df_inverse)
+        jumlah_prediksi = prediction_scaled.shape[1]
+        prediksi_values = [pred_df_inverse.iloc[i, 0] for i in range(jumlah_prediksi)]
+        
+        # Visualisasi
+        # Buat label tahun
+        tahun_terakhir = max(df_grouped['Year'])
+        #tahun_terakhir = 2024  # <- ganti sesuai dengan tahun terakhir data historis kamu
+        tahun_historis = list(range(tahun_terakhir - SEQUENCE_LENGTH + 1, tahun_terakhir + 1))
+        tahun_prediksi = list(range(tahun_terakhir + 1, tahun_terakhir + jumlah_prediksi + 1))
+        tahun_total = tahun_historis + tahun_prediksi
 
-            # Menampilkan prediksi di grafik input (opsional, untuk konteks)
-            # combined_data = input_values_list + [predicted_original_value]
-            # st.line_chart(pd.DataFrame(combined_data, columns=['Input & Prediction']))
+        # Gabungkan data historis dan hasil prediksi
+        full_series = DATA_HISTORIS_CO2[benua][:SEQUENCE_LENGTH] + prediksi_values
 
-    except ValueError:
-        st.error("Input tidak valid. Harap masukkan nilai numerik yang dipisahkan koma.")
+        # Buat dataframe dengan index tahun
+        df_plot = pd.DataFrame({
+        'Tahun': tahun_total,
+        'CO₂ Emission': full_series
+        })
+
+        df_plot['Tahun'] = df_plot['Tahun'].astype(int)  # <-- PENTING!
+        df_plot = df_plot.set_index('Tahun')
+        # Tampilkan grafik
+        st.line_chart(df_plot)
+
     except Exception as e:
-        st.error(f"Terjadi kesalahan teknis: {e}")
-        st.info("Pastikan format input sesuai dan model/scaler sudah dimuat dengan benar.")
-        st.info("Jika Anda melihat pesan ini saat pertama kali menjalankan, pastikan file model dan scaler ada dan dapat diakses.")
+        st.error(f"Gagal melakukan prediksi: {e}")
 
+# --- Footer ---
 st.markdown("---")
 st.markdown("Aplikasi prediksi ini dibuat untuk tujuan demonstrasi dan pendidikan. Akurasi prediksi sangat bergantung pada kualitas model, data pelatihan, dan relevansi fitur input.")
-st.markdown("Dibuat dengan ❤️ dan Streamlit.")
+st.markdown("Dibuat dengan Streamlit.")
